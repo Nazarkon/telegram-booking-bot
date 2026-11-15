@@ -13,8 +13,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   variable with placeholder values.
 - Pino logger factory and `src/i18n/uk.ts`, the single home for Ukrainian bot
   text (seeded with «Доступ заборонено» and the main keyboard labels).
+- SQLite database layer (`better-sqlite3`): `openDatabase` creates the data
+  directory, sets WAL, `foreign_keys`, `recursive_triggers` and a 5 s busy
+  timeout, and runs numbered `.sql` migrations tracked by `user_version`, each
+  in one transaction. Refuses a database newer than the code.
+- Initial schema (`001_init.sql`): users, personal/family libraries, members,
+  invites, genres (several per book), books with a Bin `deleted_at`, per-user
+  `book_reads` and a global ISBN cache. Timestamps are ISO-8601 UTC and checked
+  by the schema.
+- `books_fts` full-text index on title and authors, kept in sync by triggers;
+  case-insensitive Cyrillic prefix search («гарр» finds «Гаррі Поттер»).
 
 ### Security
+- The database itself enforces library limits: one personal library per user,
+  and a family library can't exceed 5 members + pending invites (expired,
+  revoked and accepted invites don't count). Genres can only be linked to books
+  of the same library.
 - Config errors name the bad variable but never echo its value, and the logger
   redacts `token` / `botToken` / `BOT_TOKEN` fields, so the bot token can't leak
   through a startup error or a structured log field. Tokens embedded inside
