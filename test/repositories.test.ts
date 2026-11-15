@@ -650,6 +650,7 @@ describe('invites (read side)', () => {
         libraryId: library,
         createdBy: ALICE,
         expiresAt,
+        tokenHash: 'abc123',
       });
     });
 
