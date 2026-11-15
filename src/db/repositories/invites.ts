@@ -15,6 +15,8 @@ export interface PendingLinkInvite {
   readonly libraryId: number;
   readonly createdBy: number;
   readonly expiresAt: string;
+  /** The stored sha-256 hex hash, so callers can re-compare it in constant time. */
+  readonly tokenHash: string;
 }
 
 /**
@@ -34,16 +36,18 @@ export function hasPendingUsernameInvite(db: Database, username: string | null):
 export function findPendingLinkInvite(db: Database, tokenHash: string): PendingLinkInvite | null {
   const row = db
     .prepare(
-      `SELECT id, library_id, created_by, expires_at FROM invites
+      `SELECT id, library_id, created_by, expires_at, token_hash FROM invites
        WHERE token_hash = ? AND ${PENDING_INVITE}`,
     )
     .get(tokenHash, nowIso()) as
-    { id: number; library_id: number; created_by: number; expires_at: string } | undefined;
+    | { id: number; library_id: number; created_by: number; expires_at: string; token_hash: string }
+    | undefined;
   if (row === undefined) return null;
   return {
     id: row.id,
     libraryId: row.library_id,
     createdBy: row.created_by,
     expiresAt: row.expires_at,
+    tokenHash: row.token_hash,
   };
 }

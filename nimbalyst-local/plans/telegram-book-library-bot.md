@@ -371,7 +371,7 @@ SIGINT and SIGTERM handled; exactly one poller.
 - [x] `config.ts` (zod) and `.env.example`; `logger.ts` (pino); `i18n/uk.ts`
 - [x] DB bootstrap with pragmas, migration runner, `001_init.sql` (all tables above, `books_fts` + sync triggers, personal-library unique index, family-size trigger)
 - [x] Repositories: `libraryId`-scoped methods, shared Bin-exclusion helper, `assertMember`
-- [ ] Middleware: per-user rate limit, access gate with «Доступ заборонено», user upsert; `bot.catch`; SIGINT/SIGTERM shutdown
+- [x] Middleware: per-user rate limit, access gate with «Доступ заборонено», user upsert; `bot.catch`; SIGINT/SIGTERM shutdown
 - [ ] `/start`: creates the personal library on first use and shows the main keyboard
 - **Done when:** an allowlisted user gets the keyboard and a personal library row on `/start`; a stranger gets only «Доступ заборонено»; the family-size trigger and the repository isolation tests pass against `:memory:`.
 
