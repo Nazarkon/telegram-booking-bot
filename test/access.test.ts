@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { DenialThrottle } from '../src/bot/middleware/access.js';
+import { DENIAL_THROTTLE_MAX_ENTRIES, DenialThrottle } from '../src/bot/middleware/access.js';
 import { uk } from '../src/i18n/uk.js';
 import { createPersonalLibrary } from '../src/db/repositories/libraries.js';
 import { getUser, upsertUser } from '../src/db/repositories/users.js';
@@ -241,5 +241,25 @@ describe('DenialThrottle', () => {
     expect(throttle.tryAcquire(2)).toBe(false);
     expect(throttle.tryAcquire(3)).toBe(false);
     expect(throttle.tryAcquire(4)).toBe(false);
+  });
+
+  it('caps the number of remembered strangers at 10,000', () => {
+    expect(DENIAL_THROTTLE_MAX_ENTRIES).toBe(10_000);
+  });
+
+  it('moves a stranger to the newest slot when they are answered again', () => {
+    let now = 0;
+    const throttle = new DenialThrottle(1000, 3, () => now);
+    throttle.tryAcquire(1);
+    throttle.tryAcquire(2);
+
+    // User 1's window has expired, so they are answered again and become the newest entry.
+    now = 1000;
+    expect(throttle.tryAcquire(1)).toBe(true);
+    throttle.tryAcquire(3);
+    // The cap is reached: the oldest entry (user 2, not the re-answered user 1) is dropped.
+    throttle.tryAcquire(4);
+
+    expect(throttle.tryAcquire(1)).toBe(false);
   });
 });

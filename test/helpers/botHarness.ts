@@ -16,7 +16,7 @@ export const BOT_TOKEN = '123456789:AAFake-Secret_tokenValue';
 export const CHAT_ID_OFFSET = 1000;
 export const HOUR_MS = 60 * 60 * 1000;
 
-const FAKE_BOT_INFO: UserFromGetMe = {
+export const FAKE_BOT_INFO: UserFromGetMe = {
   id: 123456789,
   is_bot: true,
   first_name: 'Test bot',

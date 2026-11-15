@@ -26,8 +26,13 @@ export function createPollingStopper(
   getPolling: () => Promise<void>,
 ): () => Promise<void> {
   return async () => {
-    await bot.stop();
-    await getPolling();
+    // Wait for the polling loop even when stop() fails: the database is closed right after
+    // this, so the in-flight update must be done first.
+    try {
+      await bot.stop();
+    } finally {
+      await getPolling();
+    }
   };
 }
 

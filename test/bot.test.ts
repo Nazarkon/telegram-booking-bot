@@ -125,6 +125,17 @@ describe('per-user rate limit', () => {
     expect(denials).toHaveLength(2);
   });
 
+  it('logs one warning per exceeded limit, naming the user and never the content', async () => {
+    const { send, logLines } = harness({ rateLimit: { windowMs: 60_000, maxUpdates: 2 } });
+
+    for (let i = 0; i < 6; i++) await send(messageUpdate({ id: ALLOWED }, 'secret text'));
+
+    const warnings = logLines().filter((line) => line.msg === 'rate limit exceeded');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({ level: 40, userId: ALLOWED });
+    expect(JSON.stringify(warnings[0])).not.toContain('secret text');
+  });
+
   it('does not upsert the user for updates it dropped', async () => {
     const { send, db } = harness({ rateLimit: { windowMs: 60_000, maxUpdates: 1 } });
     await send(messageUpdate({ id: ALLOWED, username: 'first' }, 'x'));

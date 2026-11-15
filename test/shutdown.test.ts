@@ -185,9 +185,37 @@ describe('createPollingStopper', () => {
     expect(events).toEqual(['bot.stop', 'update:finished', 'stopper:resolved']);
   });
 
-  it('propagates a failure of bot.stop()', async () => {
+  it('still waits for the polling loop when bot.stop() fails, then rejects with the stop error', async () => {
+    const events: string[] = [];
+    let finishUpdate: () => void = () => undefined;
+    const polling = new Promise<void>((resolve) => {
+      finishUpdate = () => {
+        events.push('update:finished');
+        resolve();
+      };
+    });
     const bot = { stop: () => Promise.reject(new Error('nope')) };
+    let outcome: unknown = 'pending';
 
-    await expect(createPollingStopper(bot, () => Promise.resolve())()).rejects.toThrow('nope');
+    const stopped = createPollingStopper(bot, () => polling)().then(
+      () => {
+        outcome = 'resolved';
+      },
+      (error: unknown) => {
+        events.push('stopper:rejected');
+        outcome = error;
+      },
+    );
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    // bot.stop() has already rejected, but the in-flight update is still running.
+    expect(outcome).toBe('pending');
+    expect(events).toEqual([]);
+
+    finishUpdate();
+    await stopped;
+
+    expect(events).toEqual(['update:finished', 'stopper:rejected']);
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toBe('nope');
   });
 });
