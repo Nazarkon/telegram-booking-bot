@@ -92,9 +92,9 @@ function addGenre(db: Db, libraryId: number, name: string): number {
   return Number(result.lastInsertRowid);
 }
 
-function count(db: Db, table: string, where = '1 = 1'): number {
-  // Table and condition are fixed literals from this test file, never user input.
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get() as {
+function count(db: Db, table: string, where = '1 = 1', ...params: (string | number)[]): number {
+  // Table and condition are fixed literals from this test file; values are always bound.
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get(...params) as {
     n: number;
   };
   return row.n;
@@ -609,7 +609,7 @@ describe('schema', () => {
 
       expect(() => db.prepare('DELETE FROM users WHERE id = ?').run(adder)).not.toThrow();
 
-      expect(count(db, 'users', `id = ${String(adder)}`)).toBe(0);
+      expect(count(db, 'users', 'id = ?', adder)).toBe(0);
       expect(db.prepare('SELECT added_by AS a FROM books WHERE id = ?').get(book)).toEqual({
         a: null,
       });
@@ -670,11 +670,11 @@ describe('schema', () => {
       addMembers(library, FAMILY_LIMIT - 1, 10);
       createUser(db, 99);
 
-      expect(count(db, 'library_members', `library_id = ${String(library)}`)).toBe(FAMILY_LIMIT);
+      expect(count(db, 'library_members', 'library_id = ?', library)).toBe(FAMILY_LIMIT);
       expect(() => {
         addMember(db, library, 99);
       }).toThrow(/family library is full/);
-      expect(count(db, 'library_members', `library_id = ${String(library)}`)).toBe(FAMILY_LIMIT);
+      expect(count(db, 'library_members', 'library_id = ?', library)).toBe(FAMILY_LIMIT);
     });
 
     it('rejects a 5th member when 4 members + 1 pending invite already fill the library', () => {
@@ -719,7 +719,7 @@ describe('schema', () => {
       expect(() => {
         addMember(db, library, 99);
       }).not.toThrow();
-      expect(count(db, 'library_members', `library_id = ${String(library)}`)).toBe(FAMILY_LIMIT);
+      expect(count(db, 'library_members', 'library_id = ?', library)).toBe(FAMILY_LIMIT);
     });
 
     it('counts pending invites per library when adding a member', () => {
@@ -737,7 +737,7 @@ describe('schema', () => {
       expect(() => {
         addMember(db, libraryB, newUser);
       }).not.toThrow();
-      expect(count(db, 'library_members', `library_id = ${String(libraryB)}`)).toBe(2);
+      expect(count(db, 'library_members', 'library_id = ?', libraryB)).toBe(2);
     });
 
     it('lets a new invite that is already expired, revoked or accepted be stored in a full library', () => {
@@ -779,14 +779,15 @@ describe('schema', () => {
         addMember(db, library, 99);
       })();
 
-      expect(count(db, 'library_members', `library_id = ${String(library)}`)).toBe(FAMILY_LIMIT);
+      expect(count(db, 'library_members', 'library_id = ?', library)).toBe(FAMILY_LIMIT);
     });
 
     function pendingInvites(library: number): number {
       return count(
         db,
         'invites',
-        `library_id = ${String(library)} AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+        "library_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        library,
       );
     }
 
@@ -801,7 +802,7 @@ describe('schema', () => {
         addInvite(db, library, owner);
       }).not.toThrow();
 
-      const members = count(db, 'library_members', `library_id = ${String(library)}`);
+      const members = count(db, 'library_members', 'library_id = ?', library);
       expect(members + pendingInvites(library)).toBe(FAMILY_LIMIT);
       expect(pendingInvites(library)).toBe(1);
     });
@@ -913,10 +914,18 @@ describe('schema', () => {
       insert.run(reader, book);
       insert.run(owner, otherBook);
 
-      expect(count(db, 'book_reads', `book_id = ${String(book)}`)).toBe(2);
-      expect(count(db, 'book_reads', `user_id = ${String(owner)}`)).toBe(2);
-      expect(count(db, 'book_reads', `user_id = ${String(reader)}`)).toBe(1);
-      expect(() => insert.run(owner, book)).toThrow(/UNIQUE|PRIMARY KEY/);
+      expect(count(db, 'book_reads', 'book_id = ?', book)).toBe(2);
+      expect(count(db, 'book_reads', 'user_id = ?', owner)).toBe(2);
+      expect(count(db, 'book_reads', 'user_id = ?', reader)).toBe(1);
+      // Same (user, book) again, with a different read_at: only the key may reject it.
+      const laterReadAt = iso(HOUR_MS);
+      expect(() => {
+        db.prepare('INSERT INTO book_reads (user_id, book_id, read_at) VALUES (?, ?, ?)').run(
+          owner,
+          book,
+          laterReadAt,
+        );
+      }).toThrow(/UNIQUE|PRIMARY KEY/);
       expect(count(db, 'book_reads')).toBe(3);
     });
   });
@@ -986,10 +995,10 @@ describe('schema', () => {
 
       db.prepare('DELETE FROM books WHERE id = ?').run(doomed);
 
-      expect(count(db, 'book_genres', `book_id = ${String(doomed)}`)).toBe(0);
-      expect(count(db, 'book_reads', `book_id = ${String(doomed)}`)).toBe(0);
-      expect(count(db, 'book_genres', `book_id = ${String(kept)}`)).toBe(1);
-      expect(count(db, 'book_reads', `book_id = ${String(kept)}`)).toBe(1);
+      expect(count(db, 'book_genres', 'book_id = ?', doomed)).toBe(0);
+      expect(count(db, 'book_reads', 'book_id = ?', doomed)).toBe(0);
+      expect(count(db, 'book_genres', 'book_id = ?', kept)).toBe(1);
+      expect(count(db, 'book_reads', 'book_id = ?', kept)).toBe(1);
       expect(count(db, 'genres')).toBe(1);
     });
 
