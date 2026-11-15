@@ -27,8 +27,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   books, the Bin (list, restore, permanent delete), genres (several per book,
   «Фентезі»/«фентезі» treated as one), per-user read status and the ISBN cache.
   Creating a personal library adds its owner membership in the same transaction.
+- Bot runtime on grammY with long polling: per-user rate limit (5 updates per
+  3 s, extra updates dropped), user records saved for allowed users, a global
+  error handler with structured logs, and clean shutdown on SIGINT and SIGTERM
+  (stop polling, finish the current update, close the database, exit once).
 
 ### Security
+- Access gate before every handler: only allowlisted users, library members,
+  users with a pending username invite matching their current username, or a
+  valid `/start inv_<token>` link get through. Tokens are format-checked before
+  any lookup and compared by SHA-256 hash in constant time. Everyone else gets
+  a single «Доступ заборонено» (at most once per 10 minutes), identical for
+  every reason, and nothing about them is stored.
+- The bot token is now scrubbed from all log output, including inside error
+  messages, stacks and Telegram API URLs.
 - Library isolation in the data layer: every book, genre, read-status and Bin
   query requires a `libraryId` and filters on it, so an id from another library
   returns nothing and changes nothing. Binned books are excluded through one
@@ -40,7 +52,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   of the same library.
 - Config errors name the bad variable but never echo its value, and the logger
   redacts `token` / `botToken` / `BOT_TOKEN` fields, so the bot token can't leak
-  through a startup error or a structured log field. Tokens embedded inside
-  error message text are not scrubbed yet; that lands with the error handler.
+  through a startup error or a structured log field.
 - `.gitignore` keeps `.env`, `*.db` (and WAL/SHM files), `/data` and
   `nimbalyst-local/Library.xlsx` out of git; `.env.example` stays tracked.
