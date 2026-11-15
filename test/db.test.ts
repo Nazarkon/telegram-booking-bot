@@ -510,6 +510,24 @@ describe('schema', () => {
       expect(count(db, 'library_members', `library_id = ${String(library)}`)).toBe(FAMILY_LIMIT);
     });
 
+    it('counts pending invites per library when adding a member', () => {
+      // Library A is full: 1 member + 4 pending invites.
+      const { library: libraryA, owner: ownerA } = familyWithOwner();
+      for (let i = 0; i < FAMILY_LIMIT - 1; i += 1) {
+        addInvite(db, libraryA, ownerA);
+      }
+      // Library B has only its owner. A's pending invites must not count against it.
+      const ownerB = createUser(db, 2);
+      const libraryB = createLibrary(db, 'family', ownerB);
+      addMember(db, libraryB, ownerB, 'owner');
+      const newUser = createUser(db, 99);
+
+      expect(() => {
+        addMember(db, libraryB, newUser);
+      }).not.toThrow();
+      expect(count(db, 'library_members', `library_id = ${String(libraryB)}`)).toBe(2);
+    });
+
     it('lets a new invite that is already expired, revoked or accepted be stored in a full library', () => {
       const { library, owner } = familyWithOwner();
       addMembers(library, FAMILY_LIMIT - 1, 10);
