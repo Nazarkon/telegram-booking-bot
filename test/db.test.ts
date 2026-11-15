@@ -292,6 +292,20 @@ describe('schema', () => {
       expect(ftsSearch(db, '"толк"*')).toEqual(['Володар перснів']);
     });
 
+    it('re-indexes when only authors change', () => {
+      const library = createLibrary(db, 'personal', createUser(db, 1));
+      const id = addBook(db, library, 'Гаррі Поттер', 'Роулінг');
+
+      db.prepare('UPDATE books SET authors = ? WHERE id = ?').run('Толкін', id);
+
+      expect(ftsSearch(db, '"роулін"*')).toEqual([]);
+      expect(ftsSearch(db, '"толк"*')).toEqual(['Гаррі Поттер']);
+      expect(ftsSearch(db, '"гарр"*')).toEqual(['Гаррі Поттер']);
+      expect(() => {
+        checkFtsIntegrity(db);
+      }).not.toThrow();
+    });
+
     it('removes the book from the index on delete', () => {
       const library = createLibrary(db, 'personal', createUser(db, 1));
       const id = addBook(db, library, 'Гаррі Поттер');
