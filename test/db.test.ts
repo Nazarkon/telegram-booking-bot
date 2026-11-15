@@ -3,12 +3,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IN_MEMORY_DB_PATH, openDatabase } from '../src/db/index.js';
 import { MigrationError, runMigrations } from '../src/db/migrate.js';
 
 type Db = Database.Database;
+
+// Lets a test force the order in which the migration runner sees the directory listing, so the
+// "numeric order" check does not depend on what the file system happens to return.
+const directoryListing = vi.hoisted(() => ({ descendingByName: false }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const readdirSync = (path: string): string[] => {
+    const names = actual.readdirSync(path);
+    return directoryListing.descendingByName ? [...names].sort().reverse() : names;
+  };
+  return { ...actual, readdirSync };
+});
 
 const FAMILY_LIMIT = 5;
 const HOUR_MS = 60 * 60 * 1000;
@@ -174,6 +187,40 @@ describe('migrations', () => {
       expect(db.pragma('user_version', { simple: true })).toBe(3);
     });
 
+    it('applies files in numeric order even when the directory listing is not in that order', () => {
+      // 10 files: by name "10_x" sorts before "2_x", so a name-ordered listing is not numeric.
+      writeFileSync(
+        join(dir, '1_step.sql'),
+        'CREATE TABLE log (n INTEGER); INSERT INTO log VALUES (1);',
+      );
+      for (let version = 2; version <= 10; version += 1) {
+        writeFileSync(
+          join(dir, `${String(version)}_step.sql`),
+          `INSERT INTO log VALUES (${String(version)});`,
+        );
+      }
+      directoryListing.descendingByName = true;
+      try {
+        const applied = runMigrations(db, dir);
+
+        expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      } finally {
+        directoryListing.descendingByName = false;
+      }
+      const log = db.prepare('SELECT n FROM log ORDER BY rowid').all() as { n: number }[];
+      expect(log.map((row) => row.n)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    });
+
+    it('ignores files that do not match NNN_name.sql', () => {
+      writeFileSync(join(dir, '001_init.sql'), 'CREATE TABLE a (x INTEGER);');
+      writeFileSync(join(dir, '001_init.sql.bak'), 'this is not sql');
+      writeFileSync(join(dir, 'README.md'), 'notes');
+      writeFileSync(join(dir, 'x001_y.sql'), 'this is not sql');
+
+      expect(runMigrations(db, dir)).toEqual([1]);
+      expect(db.pragma('user_version', { simple: true })).toBe(1);
+    });
+
     it('rolls back a failing migration together with its user_version bump', () => {
       writeFileSync(join(dir, '001_first.sql'), 'CREATE TABLE a (x INTEGER);');
       writeFileSync(
@@ -240,6 +287,21 @@ describe('openDatabase on a file', () => {
     second.close();
   });
 
+  it('closes the handle and rethrows when opening fails after the file was opened', () => {
+    const path = join(dir, 'newer.db');
+    const prepared = new Database(path);
+    prepared.pragma('user_version = 7');
+    prepared.close();
+    const close = vi.spyOn(Database.prototype, 'close');
+    try {
+      expect(() => openDatabase(path)).toThrow(MigrationError);
+
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
+    }
+  });
+
   it('enforces foreign keys on the opened handle', () => {
     const db = openDatabase(IN_MEMORY_DB_PATH);
 
@@ -290,6 +352,21 @@ describe('schema', () => {
       expect(ftsSearch(db, '"роулін"*')).toEqual([]);
       expect(ftsSearch(db, '"володар"*')).toEqual(['Володар перснів']);
       expect(ftsSearch(db, '"толк"*')).toEqual(['Володар перснів']);
+    });
+
+    it('re-indexes when only the title changes', () => {
+      const library = createLibrary(db, 'personal', createUser(db, 1));
+      const id = addBook(db, library, 'Гаррі Поттер', 'Роулінг');
+
+      db.prepare('UPDATE books SET title = ? WHERE id = ?').run('Володар перснів', id);
+
+      expect(ftsSearch(db, '"гарр"*')).toEqual([]);
+      expect(ftsRowids(db, '"гарр"*')).toEqual([]);
+      expect(ftsSearch(db, '"володар"*')).toEqual(['Володар перснів']);
+      expect(ftsSearch(db, '"роулін"*')).toEqual(['Володар перснів']);
+      expect(() => {
+        checkFtsIntegrity(db);
+      }).not.toThrow();
     });
 
     it('re-indexes when only authors change', () => {
@@ -415,6 +492,127 @@ describe('schema', () => {
       expect(() => insert.run(library, user, 'link', null, null, iso(HOUR_MS))).toThrow(/CHECK/);
       expect(() => insert.run(library, user, 'username', 'h', null, iso(HOUR_MS))).toThrow(/CHECK/);
       expect(() => insert.run(library, user, 'username', null, 'anna', iso(HOUR_MS))).not.toThrow();
+    });
+  });
+
+  describe('column constraints', () => {
+    it('accepts only personal and family as a library kind', () => {
+      const user = createUser(db, 1);
+      const insert = db.prepare(
+        'INSERT INTO libraries (kind, name, owner_user_id) VALUES (?, ?, ?)',
+      );
+
+      for (const kind of ['shared', 'public', 'Personal', 'FAMILY', '']) {
+        expect(() => insert.run(kind, 'x', user), kind).toThrow(/CHECK/);
+      }
+      expect(() => insert.run('family', 'x', user)).not.toThrow();
+    });
+
+    it('allows a user only one membership row per library, whatever the role', () => {
+      const owner = createUser(db, 1);
+      const library = createLibrary(db, 'family', owner);
+      addMember(db, library, owner, 'owner');
+
+      expect(() => {
+        addMember(db, library, owner, 'member');
+      }).toThrow(/UNIQUE|PRIMARY KEY/);
+      expect(() => {
+        addMember(db, library, owner, 'owner');
+      }).toThrow(/UNIQUE|PRIMARY KEY/);
+      expect(count(db, 'library_members')).toBe(1);
+    });
+
+    describe('invites: token_hash and username depend on the kind', () => {
+      let library: number;
+      let user: number;
+      let insert: Database.Statement;
+
+      beforeEach(() => {
+        user = createUser(db, 1);
+        library = createLibrary(db, 'personal', user);
+        insert = db.prepare(
+          'INSERT INTO invites (library_id, created_by, kind, token_hash, username, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+        );
+      });
+
+      // Each rejected row below breaks exactly one of the four conditions of the CHECK.
+      it('rejects a link invite without a token hash', () => {
+        expect(() => insert.run(library, user, 'link', null, null, iso(HOUR_MS))).toThrow(/CHECK/);
+      });
+
+      it('rejects a link invite that carries a username', () => {
+        expect(() => insert.run(library, user, 'link', 'h', 'anna', iso(HOUR_MS))).toThrow(/CHECK/);
+      });
+
+      it('rejects a username invite without a username', () => {
+        expect(() => insert.run(library, user, 'username', null, null, iso(HOUR_MS))).toThrow(
+          /CHECK/,
+        );
+      });
+
+      it('rejects a username invite that carries a token hash', () => {
+        expect(() => insert.run(library, user, 'username', 'h', 'anna', iso(HOUR_MS))).toThrow(
+          /CHECK/,
+        );
+      });
+
+      it('accepts a well-formed link invite and a well-formed username invite', () => {
+        expect(() => insert.run(library, user, 'link', 'h', null, iso(HOUR_MS))).not.toThrow();
+        expect(() =>
+          insert.run(library, user, 'username', null, 'anna', iso(HOUR_MS)),
+        ).not.toThrow();
+        expect(count(db, 'invites')).toBe(2);
+      });
+    });
+
+    it('accepts only isbn, excel and manual as a book source', () => {
+      const library = createLibrary(db, 'personal', createUser(db, 1));
+      const insert = db.prepare('INSERT INTO books (library_id, title, source) VALUES (?, ?, ?)');
+
+      expect(() => insert.run(library, 't', 'other')).toThrow(/CHECK/);
+      expect(() => insert.run(library, 't', 'Manual')).toThrow(/CHECK/);
+      for (const source of ['isbn', 'excel', 'manual']) {
+        expect(() => insert.run(library, 't', source), source).not.toThrow();
+      }
+      expect(count(db, 'books')).toBe(3);
+    });
+
+    it('checks the shape of books.deleted_at but lets it be NULL', () => {
+      const library = createLibrary(db, 'personal', createUser(db, 1));
+      const book = addBook(db, library, 'Book');
+      const setDeletedAt = db.prepare('UPDATE books SET deleted_at = ? WHERE id = ?');
+
+      expect(() => setDeletedAt.run('2030-01-01 00:00:00', book)).toThrow(/CHECK/);
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO books (library_id, title, source, deleted_at) VALUES (?, 't', 'manual', '2030-01-01 00:00:00')",
+          )
+          .run(library),
+      ).toThrow(/CHECK/);
+      expect(() => setDeletedAt.run('2030-01-01T00:00:00.000Z', book)).not.toThrow();
+      expect(() => setDeletedAt.run(null, book)).not.toThrow();
+      expect(count(db, 'books', 'deleted_at IS NULL')).toBe(1);
+    });
+
+    it('keeps a book but clears added_by when the user who added it is deleted', () => {
+      const owner = createUser(db, 1);
+      const adder = createUser(db, 2);
+      const library = createLibrary(db, 'personal', owner);
+      const book = Number(
+        db
+          .prepare(
+            "INSERT INTO books (library_id, title, source, added_by) VALUES (?, 'Book', 'manual', ?)",
+          )
+          .run(library, adder).lastInsertRowid,
+      );
+
+      expect(() => db.prepare('DELETE FROM users WHERE id = ?').run(adder)).not.toThrow();
+
+      expect(count(db, 'users', `id = ${String(adder)}`)).toBe(0);
+      expect(db.prepare('SELECT added_by AS a FROM books WHERE id = ?').get(book)).toEqual({
+        a: null,
+      });
     });
   });
 
