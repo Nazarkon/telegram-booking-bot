@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+coverage/
+*.tsbuildinfo
 
 # Env & secrets
 .env

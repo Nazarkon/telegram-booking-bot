@@ -1,0 +1,9 @@
+dist/
+coverage/
+data/
+node_modules/
+package-lock.json
+nimbalyst-local/
+.claude/
+.github/
+*.md
