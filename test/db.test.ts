@@ -96,6 +96,19 @@ function ftsSearch(db: Db, match: string): string[] {
   return rows.map((row) => row.title);
 }
 
+function ftsRowids(db: Db, match: string): number[] {
+  // No join to books: this reads the index itself, so a stale entry for a deleted row shows up.
+  const rows = db.prepare('SELECT rowid FROM books_fts WHERE books_fts MATCH ?').all(match) as {
+    rowid: number;
+  }[];
+  return rows.map((row) => row.rowid);
+}
+
+function checkFtsIntegrity(db: Db): void {
+  // rank = 1 also compares the index with the content table, so it fails on a stale or missing entry.
+  db.exec("INSERT INTO books_fts (books_fts, rank) VALUES ('integrity-check', 1)");
+}
+
 describe('migrations', () => {
   it('applies 001_init, sets user_version to 1 and creates the expected tables', () => {
     const db = openDatabase(IN_MEMORY_DB_PATH);
@@ -286,9 +299,11 @@ describe('schema', () => {
       db.prepare('DELETE FROM books WHERE id = ?').run(id);
 
       expect(ftsSearch(db, '"гарр"*')).toEqual([]);
-      // The index itself stays consistent with the (now empty) content table.
+      // The index entry itself is gone, not merely hidden by the join to books.
+      expect(ftsRowids(db, '"гарр"*')).toEqual([]);
+      // The index stays consistent with the (now empty) content table.
       expect(() => {
-        db.exec("INSERT INTO books_fts (books_fts) VALUES ('integrity-check')");
+        checkFtsIntegrity(db);
       }).not.toThrow();
     });
 
@@ -300,7 +315,24 @@ describe('schema', () => {
 
       expect(ftsSearch(db, '"гарр"*')).toEqual(['Гаррі Поттер']);
       expect(() => {
-        db.exec("INSERT INTO books_fts (books_fts) VALUES ('integrity-check')");
+        checkFtsIntegrity(db);
+      }).not.toThrow();
+    });
+
+    it('stays consistent when INSERT OR REPLACE replaces a book with the same library and ISBN', () => {
+      const library = createLibrary(db, 'personal', createUser(db, 1));
+      const insert = db.prepare(
+        "INSERT OR REPLACE INTO books (library_id, isbn13, title, source) VALUES (?, '9780306406157', ?, 'isbn')",
+      );
+      insert.run(library, 'Гаррі Поттер');
+
+      insert.run(library, 'Володар перснів');
+
+      expect(count(db, 'books')).toBe(1);
+      expect(ftsSearch(db, '"володар"*')).toEqual(['Володар перснів']);
+      expect(ftsRowids(db, '"гарр"*')).toEqual([]);
+      expect(() => {
+        checkFtsIntegrity(db);
       }).not.toThrow();
     });
   });
@@ -520,6 +552,59 @@ describe('schema', () => {
       expect(count(db, 'library_members', `library_id = ${String(library)}`)).toBe(FAMILY_LIMIT);
     });
 
+    function pendingInvites(library: number): number {
+      return count(
+        db,
+        'invites',
+        `library_id = ${String(library)} AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+      );
+    }
+
+    it('accepts a new pending invite when only expired, revoked and accepted invites sit beside 4 members', () => {
+      const { library, owner } = familyWithOwner();
+      addMembers(library, 3, 10);
+      addInvite(db, library, owner, { expiresAt: iso(-HOUR_MS) });
+      addInvite(db, library, owner, { revokedAt: iso() });
+      addInvite(db, library, owner, { acceptedAt: iso() });
+
+      expect(() => {
+        addInvite(db, library, owner);
+      }).not.toThrow();
+
+      const members = count(db, 'library_members', `library_id = ${String(library)}`);
+      expect(members + pendingInvites(library)).toBe(FAMILY_LIMIT);
+      expect(pendingInvites(library)).toBe(1);
+    });
+
+    it('counts members per library when checking a new invite', () => {
+      const { library: full } = familyWithOwner();
+      addMembers(full, FAMILY_LIMIT - 1, 10);
+      const otherOwner = createUser(db, 2);
+      const other = createLibrary(db, 'family', otherOwner);
+      addMember(db, other, otherOwner, 'owner');
+
+      expect(() => {
+        addInvite(db, other, otherOwner);
+      }).not.toThrow();
+      expect(pendingInvites(other)).toBe(1);
+    });
+
+    it('counts pending invites per library when checking a new invite', () => {
+      const busyOwner = createUser(db, 3);
+      const busy = createLibrary(db, 'family', busyOwner);
+      addMember(db, busy, busyOwner, 'owner');
+      for (let i = 0; i < FAMILY_LIMIT - 1; i += 1) addInvite(db, busy, busyOwner);
+      const otherOwner = createUser(db, 2);
+      const other = createLibrary(db, 'family', otherOwner);
+      addMember(db, other, otherOwner, 'owner');
+
+      expect(pendingInvites(busy)).toBe(FAMILY_LIMIT - 1);
+      expect(() => {
+        addInvite(db, other, otherOwner);
+      }).not.toThrow();
+      expect(pendingInvites(other)).toBe(1);
+    });
+
     it('does not limit personal libraries', () => {
       const owner = createUser(db, 1);
       const library = createLibrary(db, 'personal', owner);
@@ -582,6 +667,27 @@ describe('schema', () => {
       expect(() =>
         db.prepare('UPDATE book_genres SET genre_id = ? WHERE book_id = ?').run(foreignGenre, book),
       ).toThrow(/different libraries/);
+    });
+  });
+
+  describe('book_reads', () => {
+    it('keeps one row per (user, book): users may share a book, a user may read several books, no repeats', () => {
+      const owner = createUser(db, 1);
+      const reader = createUser(db, 2);
+      const library = createLibrary(db, 'family', owner);
+      const book = addBook(db, library, 'Book');
+      const otherBook = addBook(db, library, 'Other book');
+      const insert = db.prepare('INSERT INTO book_reads (user_id, book_id) VALUES (?, ?)');
+
+      insert.run(owner, book);
+      insert.run(reader, book);
+      insert.run(owner, otherBook);
+
+      expect(count(db, 'book_reads', `book_id = ${String(book)}`)).toBe(2);
+      expect(count(db, 'book_reads', `user_id = ${String(owner)}`)).toBe(2);
+      expect(count(db, 'book_reads', `user_id = ${String(reader)}`)).toBe(1);
+      expect(() => insert.run(owner, book)).toThrow(/UNIQUE|PRIMARY KEY/);
+      expect(count(db, 'book_reads')).toBe(3);
     });
   });
 

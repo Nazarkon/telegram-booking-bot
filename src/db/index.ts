@@ -24,6 +24,9 @@ export function openDatabase(path: string): Database.Database {
     // WAL is not available for :memory: (SQLite keeps reporting "memory"); that is fine for tests.
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
+    // INSERT OR REPLACE deletes the old row through REPLACE; without this the books_fts_delete
+    // trigger would not fire for it and the FTS index would keep a stale entry.
+    db.pragma('recursive_triggers = ON');
     db.pragma(`busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
     runMigrations(db);
   } catch (error) {
