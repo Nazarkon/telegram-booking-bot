@@ -202,7 +202,8 @@ describe('scope helpers', () => {
     const files = readdirSync(srcDir, { recursive: true, encoding: 'utf8' }).filter((file) =>
       file.endsWith('.ts'),
     );
-    const binCondition = /deleted_at\s+IS\b/i;
+    // Covers `IS NULL`, `IS NOT NULL`, `ISNULL`, `NOTNULL` and a quoted column name.
+    const binCondition = /deleted_at["`\]]?\s*(IS|ISNULL|NOTNULL)\b/i;
 
     const offenders = files.filter((file) =>
       binCondition.test(readFileSync(join(srcDir, file), 'utf8')),
@@ -372,6 +373,19 @@ describe('users', () => {
     addUser(BOB);
     const family = familyLibrary(ALICE, [BOB]);
     setActiveLibrary(db, BOB, family);
+
+    db.prepare('DELETE FROM library_members WHERE library_id = ? AND user_id = ?').run(family, BOB);
+
+    expect(getActiveLibraryId(db, BOB)).toBeNull();
+  });
+
+  it('reports no active library once the membership is gone, even if the user is in other libraries', () => {
+    addUser(ALICE);
+    addUser(BOB);
+    personalLibrary(BOB);
+    const family = familyLibrary(ALICE, [BOB]);
+    setActiveLibrary(db, BOB, family);
+    expect(getActiveLibraryId(db, BOB)).toBe(family);
 
     db.prepare('DELETE FROM library_members WHERE library_id = ? AND user_id = ?').run(family, BOB);
 
@@ -1273,6 +1287,26 @@ describe('reads', () => {
     expect(isRead(db, ALICE, library, book)).toBe(false);
     expect(isRead(db, BOB, library, book)).toBe(true);
     expect(rawCount('book_reads')).toBe(1);
+  });
+
+  it('unmarking one book keeps the mark on another book of the same user', () => {
+    const other = addBook(library, 'Other');
+    markRead(db, ALICE, library, book);
+    markRead(db, ALICE, library, other);
+
+    expect(unmarkRead(db, ALICE, library, book)).toBe(true);
+
+    expect(isRead(db, ALICE, library, other)).toBe(true);
+    expect(isRead(db, ALICE, library, book)).toBe(false);
+    expect(rawCount('book_reads')).toBe(1);
+  });
+
+  it('isRead is false for an unread book while another book of the library is read', () => {
+    const other = addBook(library, 'Other');
+    markRead(db, ALICE, library, book);
+
+    expect(isRead(db, ALICE, library, other)).toBe(false);
+    expect(isRead(db, ALICE, library, book)).toBe(true);
   });
 
   it('unmarking a book the user has not read changes nothing and returns false', () => {
