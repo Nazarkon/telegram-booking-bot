@@ -23,8 +23,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   by the schema.
 - `books_fts` full-text index on title and authors, kept in sync by triggers;
   case-insensitive Cyrillic prefix search («гарр» finds «Гаррі Поттер»).
+- Data-access repositories for users, libraries, invites (pending lookups),
+  books, the Bin (list, restore, permanent delete), genres (several per book,
+  «Фентезі»/«фентезі» treated as one), per-user read status and the ISBN cache.
+  Creating a personal library adds its owner membership in the same transaction.
 
 ### Security
+- Library isolation in the data layer: every book, genre, read-status and Bin
+  query requires a `libraryId` and filters on it, so an id from another library
+  returns nothing and changes nothing. Binned books are excluded through one
+  shared helper (a test forbids hand-written filters). `assertMember` rejects
+  non-members, and one member's read status never touches another's.
 - The database itself enforces library limits: one personal library per user,
   and a family library can't exceed 5 members + pending invites (expired,
   revoked and accepted invites don't count). Genres can only be linked to books
