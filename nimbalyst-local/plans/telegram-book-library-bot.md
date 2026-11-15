@@ -41,9 +41,6 @@ pending invite can use it.
 
 | Area | Choice | Why |
 | --- | --- | --- |
-| Language | **TypeScript (Node 24)** | Node 24.11 is already installed. |
-| Bot framework | **grammY** + `@grammyjs/conversations` + `@grammyjs/ratelimiter` | Well-typed and maintained. Conversations handle multi-step flows like adding a book. |
-| Database | **SQLite** via `better-sqlite3` | One file, synchronous, good FTS5 support. |
 | Migrations | Plain `.sql` files + a small runner using the `user_version` pragma | No ORM needed. |
 | Access | **Allowlist + invites**: `ALLOWED_USER_IDS`, library members, or a pending unexpired invite | A private household bot, not an open service. |
 | Library model | Books, genres, reads and the Bin belong to a **library**. 1 personal + up to 3 family libraries per user. | Lets a family share one catalogue while keeping personal shelves separate. |
@@ -55,16 +52,19 @@ pending invite can use it.
 | Delete | **Soft delete** to a 🗑 Bin (`deleted_at`), excluded everywhere through one shared repository helper. No auto-purge. Any member can restore. «Видалити назавжди» is final and can't be undone. | Owner decision. |
 | Genres | **Several per book** (`book_genres` join table), per library, any member can create them | The spreadsheet already lists several genres per book. |
 | Invites | Link tokens (≥ 16 random bytes, single-use, **48 h expiry**, constant-time compare) and username invites (match the current username, re-checked on accept, same 48 h expiry) | Safe to paste into a chat; usernames can change hands. |
-| ISBN metadata | Open Library first, Google Books fallback, cached in `isbn_cache`, separate outbound rate limit | Neither needs an API key. |
 | Covers | Downloaded only from Open Library / Google Books hosts, 5 s timeout, ≤ 5 MB, must decode as a real image, resized with `sharp`, stored on the volume; placeholder on any failure | No hotlinking, no surprises from arbitrary URLs. |
 | Search | FTS5 (`unicode61 remove_diacritics 2`), input ≤ ~100 chars, query syntax escaped | `LIKE` is case-insensitive only for ASCII, not Cyrillic. |
 | UI language | **Ukrainian**; all strings in `src/i18n/uk.ts` | The household's language. |
 | Hosting | **Fly.io**, one machine, volume at `/data`, long polling, `fly scale count 1` | No domain/TLS needed; SQLite needs a single writer. |
 | Backups | **None** beyond what Fly gives by default | Pet project; owner decision. |
 | Secrets | `.env` locally, **Fly secrets** in production; `.env.example` committed | Nothing secret in git or `fly.toml`. |
+| Logs / tests | `pino` / `vitest` | Structured logs; fast TS-native tests. |
+| Language | **TypeScript (Node 24)** | Node 24.11 is already installed. |
+| Bot framework | **grammY** + `@grammyjs/conversations` + `@grammyjs/ratelimiter` | Well-typed and maintained. Conversations handle multi-step flows like adding a book. |
+| Database | **SQLite** via `better-sqlite3` | One file, synchronous, good FTS5 support. |
+| ISBN metadata | Open Library first, Google Books fallback, cached in `isbn_cache`, separate outbound rate limit | Neither needs an API key. |
 | Excel parsing | `exceljs` | Handles dates and types well. |
 | Validation / config | `zod` for env and API responses | Fails fast on bad config or unexpected API data. |
-| Logs / tests | `pino` / `vitest` | Structured logs; fast TS-native tests. |
 
 ## Architecture
 
@@ -367,8 +367,8 @@ SIGINT and SIGTERM handled; exactly one poller.
 ## Phases
 
 ### Phase 1: Skeleton, DB, access
-- [ ] `npm init`, TypeScript, tsx for development, eslint/prettier, vitest; `.gitignore` covers `.env`, `*.db`, `/data`, `nimbalyst-local/Library.xlsx`
-- [ ] `config.ts` (zod) and `.env.example`; `logger.ts` (pino); `i18n/uk.ts`
+- [x] `npm init`, TypeScript, tsx for development, eslint/prettier, vitest; `.gitignore` covers `.env`, `*.db`, `/data`, `nimbalyst-local/Library.xlsx`
+- [x] `config.ts` (zod) and `.env.example`; `logger.ts` (pino); `i18n/uk.ts`
 - [ ] DB bootstrap with pragmas, migration runner, `001_init.sql` (all tables above, `books_fts` + sync triggers, personal-library unique index, family-size trigger)
 - [ ] Repositories: `libraryId`-scoped methods, shared Bin-exclusion helper, `assertMember`
 - [ ] Middleware: per-user rate limit, access gate with «Доступ заборонено», user upsert; `bot.catch`; SIGINT/SIGTERM shutdown
@@ -382,6 +382,7 @@ SIGINT and SIGTERM handled; exactly one poller.
 - [ ] Members list, owner-only actions (revoke invite, remove member, rename, delete), leave library with ownership transfer (one transaction, reads removed)
 - [ ] Tests: limits (5 per family, 1 personal, 3 family), expired/used/revoked tokens, username changed before accept, non-owner can't use owner actions, ownership transfer, non-member can't act on a library
 - **Done when:** two test accounts can share a family library via a link and via a username invite, and every limit and token test passes.
+- **Done when:** the bot answers `/start` and a row appears in `users`.
 
 ### Phase 3: ISBN service, covers & add-by-ISBN
 - [ ] `normalize.ts`: strip, ISBN-10/13 checksums, 10 → 13 (unit-tested)
